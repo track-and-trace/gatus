@@ -481,7 +481,7 @@ func (s *Store) UpsertTriggeredEndpointAlert(ep *endpoint.Endpoint, triggeredAle
 	}
 	_, err = tx.Exec(
 		`
-			INSERT INTO endpoint_alerts_triggered (endpoint_id, configuration_checksum, resolve_key, number_of_successes_in_a_row) 
+			INSERT INTO endpoint_alerts_triggered (endpoint_id, configuration_checksum, resolve_key, number_of_successes_in_a_row)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT(endpoint_id, configuration_checksum) DO UPDATE SET
 				resolve_key = $3,
@@ -524,7 +524,7 @@ func (s *Store) DeleteAllTriggeredAlertsNotInChecksumsByEndpoint(ep *endpoint.En
 	} else {
 		args := make([]interface{}, 0, len(checksums)+1)
 		args = append(args, ep.Key())
-		query := `DELETE FROM endpoint_alerts_triggered 
+		query := `DELETE FROM endpoint_alerts_triggered
 			WHERE endpoint_id = (SELECT endpoint_id FROM endpoints WHERE endpoint_key = $1 LIMIT 1)
 			  AND configuration_checksum NOT IN (`
 		for i := range checksums {
@@ -670,7 +670,7 @@ func (s *Store) updateEndpointUptime(tx *sql.Tx, endpointID int64, result *endpo
 	}
 	_, err := tx.Exec(
 		`
-			INSERT INTO endpoint_uptimes (endpoint_id, hour_unix_timestamp, total_executions, successful_executions, total_response_time) 
+			INSERT INTO endpoint_uptimes (endpoint_id, hour_unix_timestamp, total_executions, successful_executions, total_response_time)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT(endpoint_id, hour_unix_timestamp) DO UPDATE SET
 				total_executions = excluded.total_executions + endpoint_uptimes.total_executions,
@@ -691,7 +691,7 @@ func (s *Store) getAllEndpointKeys(tx *sql.Tx) (keys []string, err error) {
 	// This excludes endpoints that only exist as part of suites
 	// Using JOIN for better performance than EXISTS subquery
 	rows, err := tx.Query(`
-		SELECT DISTINCT e.endpoint_key 
+		SELECT DISTINCT e.endpoint_key
 		FROM endpoints e
 		INNER JOIN endpoint_results er ON e.endpoint_id = er.endpoint_id
 		WHERE er.suite_result_id IS NULL
@@ -967,9 +967,9 @@ func (s *Store) getNumberOfUptimeEntriesByEndpointID(tx *sql.Tx, endpointID int6
 func (s *Store) getAgeOfOldestEndpointUptimeEntry(tx *sql.Tx, endpointID int64) (time.Duration, error) {
 	rows, err := tx.Query(
 		`
-			SELECT hour_unix_timestamp 
-			FROM endpoint_uptimes 
-			WHERE endpoint_id = $1 
+			SELECT hour_unix_timestamp
+			FROM endpoint_uptimes
+			WHERE endpoint_id = $1
 			ORDER BY hour_unix_timestamp
 			LIMIT 1
 		`,
@@ -1006,10 +1006,10 @@ func (s *Store) getLastEndpointResultSuccessValue(tx *sql.Tx, endpointID int64) 
 func (s *Store) deleteOldEndpointEvents(tx *sql.Tx, endpointID int64) error {
 	_, err := tx.Exec(
 		`
-			DELETE FROM endpoint_events 
+			DELETE FROM endpoint_events
 			WHERE endpoint_id = $1
 				AND endpoint_event_id NOT IN (
-					SELECT endpoint_event_id 
+					SELECT endpoint_event_id
 					FROM endpoint_events
 					WHERE endpoint_id = $1
 					ORDER BY endpoint_event_id DESC
@@ -1027,7 +1027,7 @@ func (s *Store) deleteOldEndpointResults(tx *sql.Tx, endpointID int64) error {
 	_, err := tx.Exec(
 		`
 			DELETE FROM endpoint_results
-			WHERE endpoint_id = $1 
+			WHERE endpoint_id = $1
 				AND endpoint_result_id NOT IN (
 					SELECT endpoint_result_id
 					FROM endpoint_results
@@ -1612,7 +1612,7 @@ func (s *Store) getNumberOfSuiteResultsByID(tx *sql.Tx, suiteID int64) (int64, e
 func (s *Store) deleteOldSuiteResults(tx *sql.Tx, suiteID int64) error {
 	_, err := tx.Exec(`
 		DELETE FROM suite_results
-		WHERE suite_id = $1 
+		WHERE suite_id = $1
 			AND suite_result_id NOT IN (
 				SELECT suite_result_id
 				FROM suite_results
@@ -1625,4 +1625,247 @@ func (s *Store) deleteOldSuiteResults(tx *sql.Tx, suiteID int64) error {
 		s.maximumNumberOfResults,
 	)
 	return err
+}
+
+// GetEndpointIDByKey returns the internal endpoint_id for a given endpoint key
+func (s *Store) GetEndpointIDByKey(key string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow("SELECT endpoint_id FROM endpoints WHERE endpoint_key = $1", key).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, common.ErrEndpointNotFound
+		}
+		return 0, err
+	}
+	return id, nil
+}
+
+// IsEndpointInMaintenance checks if an endpoint has an active maintenance window at the given time
+func (s *Store) IsEndpointInMaintenance(endpointID int64, at time.Time) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		"SELECT 1 FROM endpoint_maintenances WHERE endpoint_id = $1 AND start_timestamp <= $2 AND end_timestamp > $2 LIMIT 1",
+		endpointID,
+		at,
+	).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CreateEndpointMaintenance creates a maintenance window and returns its auto-generated ID
+func (s *Store) CreateEndpointMaintenance(m *common.EndpointMaintenance) (int64, error) {
+	if !m.EndTimestamp.After(m.StartTimestamp) {
+		return 0, fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	var id int64
+	err := s.db.QueryRow(
+		`INSERT INTO endpoint_maintenances (endpoint_id, start_timestamp, end_timestamp, note)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING endpoint_maintenance_id`,
+		m.EndpointID,
+		m.StartTimestamp,
+		m.EndTimestamp,
+		m.Note,
+	).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// CreateEndpointMaintenancesByGroups creates maintenance windows for all endpoints whose group
+// starts with any of the given group prefixes
+func (s *Store) CreateEndpointMaintenancesByGroups(groupPrefixes []string, start, end time.Time, note string) ([]int64, error) {
+	if !end.After(start) {
+		return nil, fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	if len(groupPrefixes) == 0 {
+		return nil, fmt.Errorf("at least one group prefix is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	// Build WHERE clause for group prefix matching
+	conditions := make([]string, 0, len(groupPrefixes))
+	args := make([]any, 0, len(groupPrefixes))
+	for i, prefix := range groupPrefixes {
+		conditions = append(conditions, fmt.Sprintf("endpoint_group LIKE $%d", i+1))
+		args = append(args, prefix+"%")
+	}
+	query := "SELECT endpoint_id FROM endpoints WHERE " + strings.Join(conditions, " OR ")
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	var endpointIDs []int64
+	for rows.Next() {
+		var eid int64
+		if err := rows.Scan(&eid); err != nil {
+			_ = rows.Close()
+			_ = tx.Rollback()
+			return nil, err
+		}
+		endpointIDs = append(endpointIDs, eid)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	var ids []int64
+	for _, eid := range endpointIDs {
+		var id int64
+		err := tx.QueryRow(
+			`INSERT INTO endpoint_maintenances (endpoint_id, start_timestamp, end_timestamp, note)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT(endpoint_id, start_timestamp, end_timestamp) DO NOTHING
+			 RETURNING endpoint_maintenance_id`,
+			eid, start, end, note,
+		).Scan(&id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// Duplicate, skip
+				continue
+			}
+			_ = tx.Rollback()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// CreateEndpointMaintenancesByKeys creates maintenance windows for endpoints identified by their keys
+func (s *Store) CreateEndpointMaintenancesByKeys(endpointKeys []string, start, end time.Time, note string) ([]int64, error) {
+	if !end.After(start) {
+		return nil, fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	if len(endpointKeys) == 0 {
+		return nil, fmt.Errorf("at least one endpoint key is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, epKey := range endpointKeys {
+		var eid int64
+		err := tx.QueryRow("SELECT endpoint_id FROM endpoints WHERE endpoint_key = $1", epKey).Scan(&eid)
+		if err != nil {
+			_ = tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("endpoint with key=%s not found", epKey)
+			}
+			return nil, err
+		}
+		var id int64
+		err = tx.QueryRow(
+			`INSERT INTO endpoint_maintenances (endpoint_id, start_timestamp, end_timestamp, note)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT(endpoint_id, start_timestamp, end_timestamp) DO NOTHING
+			 RETURNING endpoint_maintenance_id`,
+			eid, start, end, note,
+		).Scan(&id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// Duplicate, skip
+				continue
+			}
+			_ = tx.Rollback()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// UpdateEndpointMaintenance updates a maintenance window identified by its ID
+func (s *Store) UpdateEndpointMaintenance(m *common.EndpointMaintenance) error {
+	if !m.EndTimestamp.After(m.StartTimestamp) {
+		return fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	result, err := s.db.Exec(
+		`UPDATE endpoint_maintenances SET endpoint_id = $1, start_timestamp = $2, end_timestamp = $3, note = $4 WHERE endpoint_maintenance_id = $5`,
+		m.EndpointID,
+		m.StartTimestamp,
+		m.EndTimestamp,
+		m.Note,
+		m.ID,
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("maintenance with id=%d not found", m.ID)
+	}
+	return nil
+}
+
+// DeleteEndpointMaintenance deletes a maintenance window by its ID
+func (s *Store) DeleteEndpointMaintenance(maintenanceID int64) error {
+	result, err := s.db.Exec("DELETE FROM endpoint_maintenances WHERE endpoint_maintenance_id = $1", maintenanceID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("maintenance with id=%d not found", maintenanceID)
+	}
+	return nil
+}
+
+// GetEndpointMaintenances lists maintenance windows with optional filters
+func (s *Store) GetEndpointMaintenances(params *common.EndpointMaintenanceParams) ([]*common.EndpointMaintenance, error) {
+	var conditions []string
+	var args []any
+	argIdx := 1
+	if params.EndpointID != 0 {
+		conditions = append(conditions, fmt.Sprintf("em.endpoint_id = $%d", argIdx))
+		args = append(args, params.EndpointID)
+		argIdx++
+	}
+	if params.From != nil {
+		conditions = append(conditions, fmt.Sprintf("em.start_timestamp >= $%d", argIdx))
+		args = append(args, *params.From)
+		argIdx++
+	}
+	if params.To != nil {
+		conditions = append(conditions, fmt.Sprintf("em.end_timestamp <= $%d", argIdx))
+		args = append(args, *params.To)
+		argIdx++
+	}
+	query := `SELECT em.endpoint_maintenance_id, em.endpoint_id, em.start_timestamp, em.end_timestamp, em.note
+		FROM endpoint_maintenances em`
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY em.start_timestamp DESC"
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var maintenances []*common.EndpointMaintenance
+	for rows.Next() {
+		m := &common.EndpointMaintenance{}
+		if err := rows.Scan(&m.ID, &m.EndpointID, &m.StartTimestamp, &m.EndTimestamp, &m.Note); err != nil {
+			return nil, err
+		}
+		maintenances = append(maintenances, m)
+	}
+	return maintenances, rows.Err()
 }

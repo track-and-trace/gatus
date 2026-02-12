@@ -136,6 +136,32 @@ func (s *Store) createSQLiteSchema() error {
 	if err != nil {
 		return err
 	}
+	// Create endpoint maintenance table
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS endpoint_maintenances (
+			endpoint_maintenance_id  INTEGER PRIMARY KEY,
+			endpoint_id              INTEGER   NOT NULL REFERENCES endpoints(endpoint_id) ON DELETE CASCADE,
+			start_timestamp          TIMESTAMP NOT NULL,
+			end_timestamp            TIMESTAMP NOT NULL,
+			note                     TEXT      NOT NULL DEFAULT '',
+			UNIQUE(endpoint_id, start_timestamp, end_timestamp)
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		CREATE INDEX IF NOT EXISTS endpoint_maintenances_endpoint_id_idx ON endpoint_maintenances (endpoint_id);
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		CREATE INDEX IF NOT EXISTS endpoint_maintenances_window_idx ON endpoint_maintenances (endpoint_id, start_timestamp, end_timestamp);
+	`)
+	if err != nil {
+		return err
+	}
 	// Silent table modifications TODO: Remove this in v6.0.0
 	_, _ = s.db.Exec(`ALTER TABLE endpoint_results ADD domain_expiration INTEGER NOT NULL DEFAULT 0`)
 	// Add suite_result_id to endpoint_results table for suite endpoint linkage

@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +24,9 @@ type Store struct {
 
 	endpointCache *gocache.Cache // Cache for endpoint statuses
 	suiteCache    *gocache.Cache // Cache for suite statuses
+
+	maintenances         []*common.EndpointMaintenance // In-memory maintenance windows
+	maintenanceIDCounter int64                         // Auto-incrementing ID for maintenances
 
 	maximumNumberOfResults int // maximum number of results that an endpoint can have
 	maximumNumberOfEvents  int // maximum number of events that an endpoint can have
@@ -315,10 +320,202 @@ func (s *Store) HasEndpointStatusNewerThan(key string, timestamp time.Time) (boo
 	return false, nil
 }
 
+// GetEndpointIDByKey returns a synthetic endpoint ID for a given key in the memory store.
+// Uses the cache key index as a stable identifier.
+func (s *Store) GetEndpointIDByKey(k string) (int64, error) {
+	s.RLock()
+	defer s.RUnlock()
+	endpointStatus := s.endpointCache.GetValue(k)
+	if endpointStatus == nil {
+		return 0, common.ErrEndpointNotFound
+	}
+	// Use a hash-based synthetic ID from the key's position in sorted keys
+	allKeys := s.endpointCache.GetKeysByPattern("*", 0)
+	sort.Strings(allKeys)
+	for i, existingKey := range allKeys {
+		if existingKey == k {
+			return int64(i + 1), nil
+		}
+	}
+	return 0, common.ErrEndpointNotFound
+}
+
+// IsEndpointInMaintenance checks if an endpoint has an active maintenance window at the given time
+func (s *Store) IsEndpointInMaintenance(endpointID int64, at time.Time) (bool, error) {
+	s.RLock()
+	defer s.RUnlock()
+	for _, m := range s.maintenances {
+		if m.EndpointID == endpointID && !at.Before(m.StartTimestamp) && at.Before(m.EndTimestamp) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// CreateEndpointMaintenance creates a maintenance window and returns its auto-generated ID
+func (s *Store) CreateEndpointMaintenance(m *common.EndpointMaintenance) (int64, error) {
+	if !m.EndTimestamp.After(m.StartTimestamp) {
+		return 0, fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	s.Lock()
+	defer s.Unlock()
+	s.maintenanceIDCounter++
+	newMaintenance := &common.EndpointMaintenance{
+		ID:             s.maintenanceIDCounter,
+		EndpointID:     m.EndpointID,
+		StartTimestamp: m.StartTimestamp,
+		EndTimestamp:   m.EndTimestamp,
+		Note:           m.Note,
+	}
+	s.maintenances = append(s.maintenances, newMaintenance)
+	return newMaintenance.ID, nil
+}
+
+// CreateEndpointMaintenancesByGroups creates maintenance windows for all endpoints whose group
+// starts with any of the given group prefixes
+func (s *Store) CreateEndpointMaintenancesByGroups(groupPrefixes []string, start, end time.Time, note string) ([]int64, error) {
+	if !end.After(start) {
+		return nil, fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	s.Lock()
+	defer s.Unlock()
+	var ids []int64
+	allStatuses := s.endpointCache.GetAll()
+	for _, v := range allStatuses {
+		status, ok := v.(*endpoint.Status)
+		if !ok {
+			continue
+		}
+		for _, prefix := range groupPrefixes {
+			if strings.HasPrefix(status.Group, prefix) {
+				// Find the endpoint ID
+				epKey := key.ConvertGroupAndNameToKey(status.Group, status.Name)
+				allKeys := s.endpointCache.GetKeysByPattern("*", 0)
+				sort.Strings(allKeys)
+				var eid int64
+				for i, k := range allKeys {
+					if k == epKey {
+						eid = int64(i + 1)
+						break
+					}
+				}
+				if eid == 0 {
+					continue
+				}
+				s.maintenanceIDCounter++
+				s.maintenances = append(s.maintenances, &common.EndpointMaintenance{
+					ID:             s.maintenanceIDCounter,
+					EndpointID:     eid,
+					StartTimestamp: start,
+					EndTimestamp:   end,
+					Note:           note,
+				})
+				ids = append(ids, s.maintenanceIDCounter)
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+// CreateEndpointMaintenancesByKeys creates maintenance windows for endpoints identified by their keys
+func (s *Store) CreateEndpointMaintenancesByKeys(endpointKeys []string, start, end time.Time, note string) ([]int64, error) {
+	if !end.After(start) {
+		return nil, fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	s.Lock()
+	defer s.Unlock()
+	allKeys := s.endpointCache.GetKeysByPattern("*", 0)
+	sort.Strings(allKeys)
+	var ids []int64
+	for _, epKey := range endpointKeys {
+		var eid int64
+		for i, k := range allKeys {
+			if k == epKey {
+				eid = int64(i + 1)
+				break
+			}
+		}
+		if eid == 0 {
+			return nil, fmt.Errorf("endpoint with key=%s not found", epKey)
+		}
+		s.maintenanceIDCounter++
+		s.maintenances = append(s.maintenances, &common.EndpointMaintenance{
+			ID:             s.maintenanceIDCounter,
+			EndpointID:     eid,
+			StartTimestamp: start,
+			EndTimestamp:   end,
+			Note:           note,
+		})
+		ids = append(ids, s.maintenanceIDCounter)
+	}
+	return ids, nil
+}
+
+// UpdateEndpointMaintenance updates a maintenance window identified by its ID
+func (s *Store) UpdateEndpointMaintenance(m *common.EndpointMaintenance) error {
+	if !m.EndTimestamp.After(m.StartTimestamp) {
+		return fmt.Errorf("end_timestamp must be after start_timestamp")
+	}
+	s.Lock()
+	defer s.Unlock()
+	for _, existing := range s.maintenances {
+		if existing.ID == m.ID {
+			existing.EndpointID = m.EndpointID
+			existing.StartTimestamp = m.StartTimestamp
+			existing.EndTimestamp = m.EndTimestamp
+			existing.Note = m.Note
+			return nil
+		}
+	}
+	return fmt.Errorf("maintenance with id=%d not found", m.ID)
+}
+
+// DeleteEndpointMaintenance deletes a maintenance window by its ID
+func (s *Store) DeleteEndpointMaintenance(maintenanceID int64) error {
+	s.Lock()
+	defer s.Unlock()
+	for i, m := range s.maintenances {
+		if m.ID == maintenanceID {
+			s.maintenances = append(s.maintenances[:i], s.maintenances[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("maintenance with id=%d not found", maintenanceID)
+}
+
+// GetEndpointMaintenances lists maintenance windows with optional filters
+func (s *Store) GetEndpointMaintenances(params *common.EndpointMaintenanceParams) ([]*common.EndpointMaintenance, error) {
+	s.RLock()
+	defer s.RUnlock()
+	var result []*common.EndpointMaintenance
+	for _, m := range s.maintenances {
+		if params.EndpointID != 0 && m.EndpointID != params.EndpointID {
+			continue
+		}
+		if params.From != nil && m.StartTimestamp.Before(*params.From) {
+			continue
+		}
+		if params.To != nil && m.EndTimestamp.After(*params.To) {
+			continue
+		}
+		result = append(result, &common.EndpointMaintenance{
+			ID:             m.ID,
+			EndpointID:     m.EndpointID,
+			StartTimestamp: m.StartTimestamp,
+			EndTimestamp:   m.EndTimestamp,
+			Note:           m.Note,
+		})
+	}
+	return result, nil
+}
+
 // Clear deletes everything from the store
 func (s *Store) Clear() {
 	s.endpointCache.Clear()
 	s.suiteCache.Clear()
+	s.maintenances = nil
+	s.maintenanceIDCounter = 0
 }
 
 // Save persists the cache to the store file

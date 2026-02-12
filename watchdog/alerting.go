@@ -48,6 +48,20 @@ func handleAlertsToTrigger(ep *endpoint.Endpoint, result *endpoint.Result, alert
 		}
 		alertProvider := alertingConfig.GetAlertingProviderByAlertType(endpointAlert.Type)
 		if alertProvider != nil {
+			// Check if endpoint is in a DB-driven maintenance window
+			if endpointID, err := store.Get().GetEndpointIDByKey(ep.Key()); err == nil {
+				if inDbMaintenance, err := store.Get().IsEndpointInMaintenance(endpointID, time.Now()); err == nil && inDbMaintenance {
+					logr.Infof("[watchdog.handleAlertsToTrigger] Suppressing %s alert for endpoint key=%s: in DB maintenance window", endpointAlert.Type, ep.Key())
+					if sendInitialAlert {
+						endpointAlert.Triggered = true
+					}
+					ep.LastReminderSent = time.Now()
+					if err := store.Get().UpsertTriggeredEndpointAlert(ep, endpointAlert); err != nil {
+						logr.Errorf("[watchdog.handleAlertsToTrigger] Failed to persist triggered endpoint alert for endpoint with key=%s: %s", ep.Key(), err.Error())
+					}
+					continue
+				}
+			}
 			logr.Infof("[watchdog.handleAlertsToTrigger] Sending %s alert because alert for endpoint with key=%s with description='%s' has been TRIGGERED", endpointAlert.Type, ep.Key(), endpointAlert.GetDescription())
 			var err error
 			alertType := "reminder"
@@ -102,6 +116,13 @@ func handleAlertsToResolve(ep *endpoint.Endpoint, result *endpoint.Result, alert
 		if !endpointAlert.IsSendingOnResolved() {
 			logr.Debugf("[watchdog.handleAlertsToResolve] Not sending request to provider of alert with type=%s for endpoint with key=%s despite being RESOLVED, because send-on-resolved is set to false", endpointAlert.Type, ep.Key())
 			continue
+		}
+		// Check if endpoint is in a DB-driven maintenance window — suppress resolve notification
+		if endpointID, err := store.Get().GetEndpointIDByKey(ep.Key()); err == nil {
+			if inDbMaintenance, err := store.Get().IsEndpointInMaintenance(endpointID, time.Now()); err == nil && inDbMaintenance {
+				logr.Infof("[watchdog.handleAlertsToResolve] Suppressing %s resolve notification for endpoint key=%s: in DB maintenance window", endpointAlert.Type, ep.Key())
+				continue
+			}
 		}
 		alertProvider := alertingConfig.GetAlertingProviderByAlertType(endpointAlert.Type)
 		if alertProvider != nil {
