@@ -132,5 +132,12 @@ func (a *API) createRouter(cfg *config.Config) *fiber.App {
 	protectedAPIRouter.Get("/v1/endpoints/:key/statuses", EndpointStatus(cfg))
 	protectedAPIRouter.Get("/v1/suites/statuses", SuiteStatuses(cfg))
 	protectedAPIRouter.Get("/v1/suites/:key/statuses", SuiteStatus(cfg))
+	// Maintenance CRUD
+	protectedAPIRouter.Get("/v1/maintenances", GetEndpointMaintenances(cfg))
+	protectedAPIRouter.Post("/v1/endpoints/:key/maintenances", CreateEndpointMaintenance(cfg))
+	protectedAPIRouter.Post("/v1/maintenances/by-groups", CreateEndpointMaintenancesByGroups(cfg))
+	protectedAPIRouter.Post("/v1/maintenances/by-keys", CreateEndpointMaintenancesByKeys(cfg))
+	protectedAPIRouter.Put("/v1/maintenances/:id", UpdateEndpointMaintenance(cfg))
+	protectedAPIRouter.Delete("/v1/maintenances/:id", DeleteEndpointMaintenance(cfg))
 	return app
 }

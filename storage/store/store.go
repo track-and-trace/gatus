@@ -8,6 +8,7 @@ import (
 	"github.com/TwiN/gatus/v5/config/endpoint"
 	"github.com/TwiN/gatus/v5/config/suite"
 	"github.com/TwiN/gatus/v5/storage"
+	"github.com/TwiN/gatus/v5/storage/store/common"
 	"github.com/TwiN/gatus/v5/storage/store/common/paging"
 	"github.com/TwiN/gatus/v5/storage/store/memory"
 	"github.com/TwiN/gatus/v5/storage/store/sql"
@@ -72,6 +73,32 @@ type Store interface {
 
 	// HasEndpointStatusNewerThan checks whether an endpoint has a status newer than the provided timestamp
 	HasEndpointStatusNewerThan(key string, timestamp time.Time) (bool, error)
+
+	// GetEndpointIDByKey returns the internal endpoint_id for a given endpoint key
+	GetEndpointIDByKey(key string) (int64, error)
+
+	// IsEndpointInMaintenance checks if an endpoint has an active maintenance window at the given time
+	IsEndpointInMaintenance(endpointID int64, at time.Time) (bool, error)
+
+	// CreateEndpointMaintenance creates a maintenance window and returns its auto-generated ID
+	CreateEndpointMaintenance(m *common.EndpointMaintenance) (int64, error)
+
+	// CreateEndpointMaintenancesByGroups creates maintenance windows for all endpoints whose group
+	// starts with any of the given group prefixes. Returns list of created maintenance IDs.
+	CreateEndpointMaintenancesByGroups(groupPrefixes []string, start, end time.Time, note string) ([]int64, error)
+
+	// CreateEndpointMaintenancesByKeys creates maintenance windows for endpoints identified by their keys.
+	// Resolves each key to endpoint_id internally. Returns list of created maintenance IDs.
+	CreateEndpointMaintenancesByKeys(endpointKeys []string, start, end time.Time, note string) ([]int64, error)
+
+	// UpdateEndpointMaintenance updates a maintenance window identified by its ID
+	UpdateEndpointMaintenance(m *common.EndpointMaintenance) error
+
+	// DeleteEndpointMaintenance deletes a maintenance window by its ID
+	DeleteEndpointMaintenance(maintenanceID int64) error
+
+	// GetEndpointMaintenances lists maintenance windows, filterable by endpoint ID and time range
+	GetEndpointMaintenances(params *common.EndpointMaintenanceParams) ([]*common.EndpointMaintenance, error)
 
 	// Clear deletes everything from the store
 	Clear()
