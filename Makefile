@@ -25,8 +25,14 @@ test:
 # Docker #
 ##########
 
+AWS_ACCOUNT_ID=$(shell aws sts get-caller-identity --profile kvinta.kvinta-dev --query Account --output text)
+ECR_IMAGE=$(AWS_ACCOUNT_ID).dkr.ecr.eu-central-1.amazonaws.com/infra/gatus:v5.35.0.1-kv
+
 docker-build:
 	docker build -t twinproduction/gatus:latest .
+
+docker-build-kvinta:
+	docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t $(ECR_IMAGE) --push .
 
 docker-run:
 	docker run -p 8080:8080 --name gatus twinproduction/gatus:latest
