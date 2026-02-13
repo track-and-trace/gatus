@@ -1,3 +1,7 @@
+storage:
+  type: postgres
+  path: "postgres://gatus:gatus@postgres:5432/gatus?sslmode=disable"
+
 endpoints:
   - name: front-end
     group: core
@@ -37,7 +41,7 @@ endpoints:
       query-name: "example.com"
       query-type: "A"
     conditions:
-      - "[BODY] == pat(*.*.*.*)"  # Matches any IPv4 address
+      - "[BODY] == pat(*.*.*.*)" # Matches any IPv4 address
       - "[DNS_RCODE] == NOERROR"
 
   - name: icmp-ping
