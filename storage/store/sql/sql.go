@@ -733,6 +733,9 @@ func (s *Store) getEndpointStatusByKey(tx *sql.Tx, key string, parameters *pagin
 			logr.Errorf("[sql.getEndpointStatusByKey] Failed to retrieve results for key=%s: %s", key, err.Error())
 		}
 	}
+	if inMaintenance, mErr := s.isEndpointInMaintenance(tx, endpointID, time.Now()); mErr == nil && inMaintenance {
+		endpointStatus.InMaintenance = true
+	}
 	if s.writeThroughCache != nil {
 		s.writeThroughCache.SetWithTTL(cacheKey, endpointStatus, cacheTTL)
 	}
@@ -1648,8 +1651,12 @@ func (s *Store) GetEndpointIDByKey(key string) (int64, error) {
 
 // IsEndpointInMaintenance checks if an endpoint has an active maintenance window at the given time
 func (s *Store) IsEndpointInMaintenance(endpointID int64, at time.Time) (bool, error) {
+	return s.isEndpointInMaintenance(s.db, endpointID, at)
+}
+
+func (s *Store) isEndpointInMaintenance(querier interface{ QueryRow(string, ...any) *sql.Row }, endpointID int64, at time.Time) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(
+	err := querier.QueryRow(
 		"SELECT 1 FROM endpoint_maintenances WHERE endpoint_id = $1 AND start_timestamp <= $2 AND end_timestamp > $2 LIMIT 1",
 		endpointID,
 		at,
