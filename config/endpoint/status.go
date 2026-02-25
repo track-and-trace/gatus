@@ -20,6 +20,9 @@ type Status struct {
 	// Events is a list of events
 	Events []*Event `json:"events,omitempty"`
 
+	// InMaintenance indicates whether the endpoint is currently in a maintenance window
+	InMaintenance bool `json:"in_maintenance"`
+
 	// Uptime information on the endpoint's uptime
 	//
 	// Used by the memory store.

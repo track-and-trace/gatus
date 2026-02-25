@@ -51,11 +51,16 @@ func NewStore(maximumNumberOfResults, maximumNumberOfEvents int) (*Store, error)
 func (s *Store) GetAllEndpointStatuses(params *paging.EndpointStatusParams) ([]*endpoint.Status, error) {
 	s.RLock()
 	defer s.RUnlock()
+	now := time.Now()
 	allStatuses := s.endpointCache.GetAll()
 	pagedEndpointStatuses := make([]*endpoint.Status, 0, len(allStatuses))
 	for _, v := range allStatuses {
 		if status, ok := v.(*endpoint.Status); ok {
-			pagedEndpointStatuses = append(pagedEndpointStatuses, ShallowCopyEndpointStatus(status, params))
+			copied := ShallowCopyEndpointStatus(status, params)
+			if eid, err := s.getEndpointIDByKey(copied.Key); err == nil {
+				copied.InMaintenance = s.isEndpointInMaintenance(eid, now)
+			}
+			pagedEndpointStatuses = append(pagedEndpointStatuses, copied)
 		}
 	}
 	sort.Slice(pagedEndpointStatuses, func(i, j int) bool {
@@ -93,7 +98,11 @@ func (s *Store) GetEndpointStatusByKey(key string, params *paging.EndpointStatus
 	if endpointStatus == nil {
 		return nil, common.ErrEndpointNotFound
 	}
-	return ShallowCopyEndpointStatus(endpointStatus.(*endpoint.Status), params), nil
+	copied := ShallowCopyEndpointStatus(endpointStatus.(*endpoint.Status), params)
+	if eid, err := s.getEndpointIDByKey(key); err == nil {
+		copied.InMaintenance = s.isEndpointInMaintenance(eid, time.Now())
+	}
+	return copied, nil
 }
 
 // GetSuiteStatusByKey returns the suite status for a given key
@@ -325,11 +334,16 @@ func (s *Store) HasEndpointStatusNewerThan(key string, timestamp time.Time) (boo
 func (s *Store) GetEndpointIDByKey(k string) (int64, error) {
 	s.RLock()
 	defer s.RUnlock()
+	return s.getEndpointIDByKey(k)
+}
+
+// getEndpointIDByKey is the lock-free internal version of GetEndpointIDByKey.
+// Caller must hold at least RLock.
+func (s *Store) getEndpointIDByKey(k string) (int64, error) {
 	endpointStatus := s.endpointCache.GetValue(k)
 	if endpointStatus == nil {
 		return 0, common.ErrEndpointNotFound
 	}
-	// Use a hash-based synthetic ID from the key's position in sorted keys
 	allKeys := s.endpointCache.GetKeysByPattern("*", 0)
 	sort.Strings(allKeys)
 	for i, existingKey := range allKeys {
@@ -344,12 +358,18 @@ func (s *Store) GetEndpointIDByKey(k string) (int64, error) {
 func (s *Store) IsEndpointInMaintenance(endpointID int64, at time.Time) (bool, error) {
 	s.RLock()
 	defer s.RUnlock()
+	return s.isEndpointInMaintenance(endpointID, at), nil
+}
+
+// isEndpointInMaintenance is the lock-free internal version of IsEndpointInMaintenance.
+// Caller must hold at least RLock.
+func (s *Store) isEndpointInMaintenance(endpointID int64, at time.Time) bool {
 	for _, m := range s.maintenances {
 		if m.EndpointID == endpointID && !at.Before(m.StartTimestamp) && at.Before(m.EndTimestamp) {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 // CreateEndpointMaintenance creates a maintenance window and returns its auto-generated ID
