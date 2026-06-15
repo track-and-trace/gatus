@@ -52,6 +52,35 @@ func TestConfig_getHTTPClient_withCookieJar(t *testing.T) {
 	}
 }
 
+func TestConfig_getHTTPClient_refreshesIdleConnections(t *testing.T) {
+	cfg := &Config{}
+	cfg.ValidateAndSetDefaults()
+	// First call creates the client and stamps the refresh time.
+	client := cfg.getHTTPClient()
+	if cfg.httpClientRefreshedAt.IsZero() {
+		t.Error("expected httpClientRefreshedAt to be set when the HTTP client is created")
+	}
+	// A subsequent call before the interval elapses must not advance the refresh time.
+	notStale := time.Now().Add(-time.Minute)
+	cfg.httpClientRefreshedAt = notStale
+	if cfg.getHTTPClient() != client {
+		t.Error("expected getHTTPClient to return the same cached client")
+	}
+	if !cfg.httpClientRefreshedAt.Equal(notStale) {
+		t.Error("expected httpClientRefreshedAt not to change before the refresh interval elapses")
+	}
+	// Once the refresh interval has elapsed, the next call must invalidate idle connections
+	// and advance the refresh time so renewed certificates are picked up.
+	stale := time.Now().Add(-2 * defaultHTTPClientRefreshInterval)
+	cfg.httpClientRefreshedAt = stale
+	if cfg.getHTTPClient() != client {
+		t.Error("expected getHTTPClient to reuse the same client object after a refresh")
+	}
+	if !cfg.httpClientRefreshedAt.After(stale) {
+		t.Error("expected httpClientRefreshedAt to be advanced after the refresh interval elapsed")
+	}
+}
+
 func TestConfig_ValidateAndSetDefaults_withCustomDNSResolver(t *testing.T) {
 	type args struct {
 		dnsResolver string
