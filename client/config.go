@@ -20,6 +20,12 @@ import (
 
 const (
 	defaultTimeout = 10 * time.Second
+
+	// defaultHTTPClientRefreshInterval is how often the cached HTTP client's idle (keep-alive)
+	// connections are closed so that the next request re-dials and re-reads the server certificate.
+	// Without this, a pooled keep-alive connection keeps reporting the certificate negotiated during
+	// the original handshake, causing stale [CERTIFICATE_EXPIRATION] values after a certificate renewal.
+	defaultHTTPClientRefreshInterval = 1 * time.Hour
 )
 
 var (
@@ -83,6 +89,10 @@ type Config struct {
 	ResolvedTunnel *sshtunnel.SSHTunnel `yaml:"-"`
 
 	httpClient *http.Client
+
+	// httpClientRefreshedAt is the last time the cached httpClient's idle connections were closed.
+	// Used to periodically force a fresh TLS handshake so renewed certificates are picked up.
+	httpClientRefreshedAt time.Time
 }
 
 // DNSResolverConfig is the parsed configuration from the DNSResolver config string.
@@ -280,6 +290,14 @@ func (c *Config) getHTTPClient() *http.Client {
 				}
 			}
 		}
+		c.httpClientRefreshedAt = time.Now()
+		return c.httpClient
+	}
+	// Periodically close idle keep-alive connections so the next request re-dials and re-reads the
+	// server certificate. This prevents stale [CERTIFICATE_EXPIRATION] values after a cert renewal.
+	if time.Since(c.httpClientRefreshedAt) > defaultHTTPClientRefreshInterval {
+		c.httpClient.CloseIdleConnections()
+		c.httpClientRefreshedAt = time.Now()
 	}
 	return c.httpClient
 }
