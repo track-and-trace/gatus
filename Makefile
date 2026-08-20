@@ -1,3 +1,4 @@
+KVINTA_VERSION=$(shell cat ../../VERSION)
 BINARY=gatus
 
 .PHONY: install
