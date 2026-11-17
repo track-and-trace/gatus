@@ -20,13 +20,14 @@ const (
 
 // OIDCConfig is the configuration for OIDC authentication
 type OIDCConfig struct {
-	IssuerURL       string        `yaml:"issuer-url"`   // e.g. https://dev-12345678.okta.com
-	RedirectURL     string        `yaml:"redirect-url"` // e.g. http://localhost:8080/authorization-code/callback
-	ClientID        string        `yaml:"client-id"`
-	ClientSecret    string        `yaml:"client-secret"`
-	Scopes          []string      `yaml:"scopes"`           // e.g. ["openid"]
-	AllowedSubjects []string      `yaml:"allowed-subjects"` // e.g. ["user1@example.com"]. If empty, all subjects are allowed
-	SessionTTL      time.Duration `yaml:"session-ttl"`      // e.g. 8h. Defaults to 8 hours
+	IssuerURL       string            `yaml:"issuer-url"`   // e.g. https://dev-12345678.okta.com
+	RedirectURL     string            `yaml:"redirect-url"` // e.g. http://localhost:8080/authorization-code/callback
+	ClientID        string            `yaml:"client-id"`
+	ClientSecret    string            `yaml:"client-secret"`
+	Scopes          []string          `yaml:"scopes"`           // e.g. ["openid"]
+	AllowedSubjects []string          `yaml:"allowed-subjects"` // e.g. ["user1@example.com"]. If empty, all subjects are allowed
+	SessionTTL      time.Duration     `yaml:"session-ttl"`      // e.g. 8h. Defaults to 8 hours
+	Bearer          *OIDCBearerConfig `yaml:"bearer,omitempty"` // Optional: accept access tokens as "Authorization: Bearer"
 
 	oauth2Config oauth2.Config
 	verifier     *oidc.IDTokenVerifier
@@ -37,7 +38,7 @@ func (c *OIDCConfig) ValidateAndSetDefaults() bool {
 	if c.SessionTTL <= 0 {
 		c.SessionTTL = DefaultOIDCSessionTTL
 	}
-	return len(c.IssuerURL) > 0 && len(c.RedirectURL) > 0 && strings.HasSuffix(c.RedirectURL, "/authorization-code/callback") && len(c.ClientID) > 0 && len(c.ClientSecret) > 0 && len(c.Scopes) > 0
+	return len(c.IssuerURL) > 0 && len(c.RedirectURL) > 0 && strings.HasSuffix(c.RedirectURL, "/authorization-code/callback") && len(c.ClientID) > 0 && len(c.ClientSecret) > 0 && len(c.Scopes) > 0 && c.Bearer.isValid()
 }
 
 func (c *OIDCConfig) initialize() error {
@@ -49,6 +50,10 @@ func (c *OIDCConfig) initialize() error {
 	}
 	logr.Infof("[security.OIDCConfig.initialize] Successfully discovered OIDC provider at '%s'", c.IssuerURL)
 	c.verifier = provider.Verifier(&oidc.Config{ClientID: c.ClientID})
+	if c.Bearer.isEnabled() {
+		c.Bearer.initialize(provider)
+		logr.Infof("[security.OIDCConfig.initialize] Bearer token authentication enabled for audiences %v", c.Bearer.Audiences)
+	}
 	// Configure an OpenID Connect aware OAuth2 client.
 	c.oauth2Config = oauth2.Config{
 		ClientID:     c.ClientID,

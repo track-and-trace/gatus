@@ -66,7 +66,7 @@ func (c *Config) ApplySecurityMiddleware(router fiber.Router) error {
 		// TODO: g8: Add a way to update cookie after? would need the writer
 		authorizationService := g8.NewAuthorizationService().WithClientProvider(clientProvider)
 		c.gate = g8.New().WithAuthorizationService(authorizationService).WithCustomTokenExtractor(customTokenExtractorFunc)
-		router.Use(adaptor.HTTPMiddleware(c.gate.Protect))
+		router.Use(adaptor.HTTPMiddleware(c.OIDC.bearerMiddleware(c.gate.Protect)))
 	} else if c.Basic != nil {
 		var decodedBcryptHash []byte
 		if len(c.Basic.PasswordBcryptHashBase64Encoded) > 0 {
@@ -103,6 +103,9 @@ func (c *Config) IsAuthenticated(ctx *fiber.Ctx) bool {
 		if err != nil {
 			logr.Errorf("[security.IsAuthenticated] Unexpected error converting request: %v", err)
 			return false
+		}
+		if handled, ok := c.OIDC.authenticateBearer(request); handled {
+			return ok
 		}
 		token := c.gate.ExtractTokenFromRequest(request)
 		if len(token) == 0 {

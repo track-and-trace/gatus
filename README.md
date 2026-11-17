@@ -2918,6 +2918,7 @@ security:
 | `security.oidc.scopes`           | Scopes to request. The only scope you need is `openid`.        | Required `[]` |
 | `security.oidc.allowed-subjects` | List of subjects to allow. If empty, all subjects are allowed. | `[]`          |
 | `security.oidc.session-ttl`      | Session time-to-live (e.g. `8h`, `1h30m`, `2h`).               | `8h`          |
+| `security.oidc.bearer`           | See [OIDC bearer tokens](#oidc-bearer-tokens-api-access-for-machine-clients). | `{}`          |
 
 ```yaml
 security:
@@ -2934,6 +2935,46 @@ security:
 ```
 
 Confused? Read [Securing Gatus with OIDC using Auth0](https://twin.sh/articles/56/securing-gatus-with-oidc-using-auth0).
+
+##### OIDC bearer tokens (API access for machine clients)
+When OIDC is configured, the protected API can additionally accept OAuth2 access tokens issued by the same provider,
+passed as `Authorization: Bearer <access token>`. This lets machine clients (e.g. a confidential client using the
+client-credentials grant) call the API without a browser login. The feature is off by default.
+
+Each token is verified on every request (signature via the provider's JWKS, issuer, expiry); no session is created.
+Requests without an `Authorization: Bearer` header keep using the session cookie, and a request with an invalid bearer
+token is rejected without falling back to the cookie.
+
+| Parameter                                | Description                                                                                                                                      | Default |
+|:-----------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------|:--------|
+| `security.oidc.bearer`                   | Bearer token configuration                                                                                                                       | `{}`    |
+| `security.oidc.bearer.enabled`           | Whether to accept bearer tokens                                                                                                                  | `false` |
+| `security.oidc.bearer.audiences`         | Accepted `aud` values (any match). Required when enabled.                                                                                        | `[]`    |
+| `security.oidc.bearer.allowed-clients`   | Accepted `azp` / `client_id` values                                                                                                              | `[]`    |
+| `security.oidc.bearer.allowed-subjects`  | Accepted `sub` values                                                                                                                            | `[]`    |
+| `security.oidc.bearer.required-role`     | Role that must be present in `realm_access.roles` or `resource_access.<security.oidc.client-id>.roles` (Keycloak claim layout)                   | `""`    |
+
+When enabled, at least one of `allowed-clients`, `allowed-subjects` or `required-role` must be set, otherwise the
+configuration is rejected. If `allowed-clients` and/or `allowed-subjects` are set, the token must match at least one
+entry of either list; if `required-role` is set, the token must also carry that role. Tokens whose `typ` claim is
+present and not `Bearer` (e.g. Keycloak ID or refresh tokens) are rejected.
+
+```yaml
+security:
+  oidc:
+    issuer-url: "https://keycloak.example.com/realms/example"
+    redirect-url: "https://status.example.com/authorization-code/callback"
+    client-id: "gatus"
+    client-secret: "abcdefghijk"
+    scopes: ["openid"]
+    bearer:
+      enabled: true
+      audiences: ["gatus"]
+      allowed-clients: ["my-automation-client"]
+```
+
+> Keycloak access tokens do not include the `gatus` client in `aud` by default. Add an *Audience* protocol mapper
+> (included client audience: `gatus`) to the calling client, or list the audience it does receive.
 
 
 ### TLS Encryption
